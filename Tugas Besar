@@ -1,0 +1,127 @@
+<?php
+
+header("Access-Control-Allow-Origin:*");
+header("Content-Type: application/json;charset=UTF-8");
+header("Access-Control-Allow-Methods:POST,GET,PUT,DELETE");
+header("Access-Control-Allow-Headers:Content-Type,Access-Control-Allow-Headers,Authorization,X-Requested-With");
+
+require_once "../config/Database.php";
+require_once "../model/Product.php";
+require_once "../model/Transaksi.php";
+require_once "../helpers/Midtrans.php";
+require_once "../helpers/RajaOngkir.php";
+require_once "../model/Keranjang.php";
+require_once "../model/User.php";
+
+$database = new Database();
+$db = $database->getConnection();
+
+$product = new Product($db);
+$transaction = new Transaction($db);
+
+$request = $_SERVER['REQUEST_METHOD'];
+
+switch ($request) {
+    // Keranjang dan Pencarian
+    case 'GET':
+        if (!isset($_GET['id'])) {
+            
+            $statement = $product->readAll();
+            $num = $statement->rowCount();
+            if ($num > 0) {
+                $productList = array();
+                $productList["records"] = array();
+                while ($row = $statement->fetch(PDO::FETCH_ASSOC)) {
+                    extract($row);
+                    $item = array(
+                        "id" => $id,
+                        "name" => $name,
+                        "deskripsi" => $description,
+                        "harga" => $price,
+                        "stok" => $stock,
+                        "kategori" => $category
+                    );
+                    array_push($productList["records"], $item);
+                }
+                http_response_code(200);
+                echo json_encode($productList);
+            } else {
+                http_response_code(404);
+                echo json_encode(array("message" => "Produk Tidak Ditemukan."));
+            }
+        } else ($_GET['type'] == 'cart') {
+            // GET cart items
+            $cart->user_id = $_GET['user_id'];
+            $items = $cart->getItems();
+
+            if (!empty($items)) {
+                http_response_code(200);
+                echo json_encode($items);
+            } else {
+                http_response_code(404);
+                echo json_encode(array("message" => "Cart is empty."));
+            }
+        }
+        break;
+
+    // Midtrans
+    case 'POST':
+        $input = json_decode(file_get_contents("php://input"));
+
+        if (isset($input->action)) {
+            switch ($input->action) {
+                case "create_transaction":
+                    // Membuat Transaksi Menggunakan Midtrans
+                    $transaction->user_id = $input->user_id;
+                    $transaction->product_ids = $input->product_ids;
+                    $transaction->total_harga = $input->total_harga;
+
+                    if ($transaction->create()) {
+                        $payment_url = MidtransHelper::createTransaction($transaction->amount, $transaction->id);
+
+                        http_response_code(201);
+                        echo json_encode(array(
+                            "message" => "Transaksi Berhasil Dibuat.",
+                            "payment_url" => $payment_url
+                        ));
+                    } else {
+                        http_response_code(503);
+                        echo json_encode(array("message" => "Gagal Membuat Transaksi."));
+                    }
+                    break;
+
+                case "calculate_shipping":
+                    // Menghitung Ongkos Kirim Menggunakan RajaOngkir
+                    &origin = $input->asal;
+                    $destination = $input->tujuan;
+                    $weight = $input->berat(kg);
+                    $courier = $input->kurir;
+
+                    $shipping_cost = RajaOngkirHelper::getShippingCost($origin, $destination, $weight, $courier);
+
+                    if ($shipping_cost) {
+                        http_response_code(200);
+                        echo json_encode(array("shipping_cost" => $shipping_cost));
+                    } else {
+                        http_response_code(400);
+                        echo json_encode(array("message" => "Gagal Mengitung Ongkos Kirim."));
+                    }
+                    break;
+
+                default:
+                    http_response_code(400);
+                    echo json_encode(array("message" => "Invalid Action."));
+                    break;
+            }
+        } else {
+            http_response_code(400);
+            echo json_encode(array("message" => "Invalid request."));
+        }
+        break;
+
+    // Handle unsupported requests
+    default:
+        http_response_code(405);
+        echo json_encode(array("message" => "Method not allowed."));
+        break;
+}
